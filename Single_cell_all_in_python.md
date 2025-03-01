@@ -1294,8 +1294,6 @@
 
 **Interactive visualization and analysis**
 
--   
-
 -   [Cellar](https://github.com/euxhenh/cellar) - \[Python\] - Cellar is
     an easy to use, interactive, and comprehensive software tool for the
     assignment of cell types in single-cell studies. It supports
