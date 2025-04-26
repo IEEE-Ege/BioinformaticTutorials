@@ -1,0 +1,227 @@
+from shiny import App, ui, render, reactive
+from shiny.types import FileInfo
+import matplotlib.pyplot as plt
+import scanpy as sc
+import tempfile
+import os
+
+# UI
+app_ui = ui.page_fluid(
+    ui.layout_sidebar(
+        ui.sidebar(
+            ui.panel_title("Scanpy Analysis App"),
+            ui.input_file("file", "Upload .h5ad file", accept=[".h5ad"]),
+            ui.input_slider("min_genes", "Minimum genes per cell", min=0, max=500, value=200),
+            ui.input_slider("max_genes", "Maximum genes per cell", min=500, max=10000, value=5000),
+            ui.input_select("hvg_method", "Highly Variable Gene Selection Method",
+                            choices=["seurat_v3", "seurat", "cell_ranger"],
+                            selected="seurat_v3"),
+            ui.input_slider("n_top_genes", "Top HVGs to keep", min=100, max=5000, value=2000),
+            ui.input_select("reduction_method", "Dimensionality Reduction Method", choices=["pca"], selected="pca"),
+            ui.input_slider("perplexity", "t-SNE Perplexity", min=5, max=50, value=30),
+            ui.input_action_button("run", "Run Analysis", class_="btn-success"),
+
+            # Clustering Section
+            ui.panel_title("Clustering"),
+            ui.input_select("clustering_method", "Clustering Algorithm",
+                            choices=["louvain", "louvain_multilevel", "slm"], selected="louvain"),
+            ui.input_slider("resolution", "Resolution", min=0.1, max=2.0, value=0.8),
+            ui.input_checkbox("group_singletons", "Group Singletons", value=True),
+            ui.input_action_button("find_clusters", "Find Clusters", class_="btn-primary")
+        ),
+        [
+            ui.card(
+                ui.card_header("Dataset Summary"),
+                ui.output_text_verbatim("summary")
+            ),
+            ui.card(
+                ui.card_header("Highly Variable Genes"),
+                ui.output_plot("hvg_plot", height="300px")
+            ),
+            ui.card(
+                ui.card_header("UMAP Plot"),
+                ui.output_plot("umap_plot", height="300px")
+            ),
+            ui.card(
+                ui.card_header("t-SNE Plot"),
+                ui.output_plot("tsne_plot", height="300px")
+            ),
+            ui.card(
+                ui.card_header("Clustered UMAP Plot"),
+                ui.output_plot("clustered_umap_plot", height="300px")
+            ),
+            ui.card(
+                ui.card_header("Clustered t-SNE Plot"),
+                ui.output_plot("clustered_tsne_plot", height="300px")
+            )
+        ]
+    ),
+    ui.TagList(
+        ui.tags.style("""
+            .card {
+                background-color: #ffffff;
+                box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+                border-radius: 8px;
+                margin-bottom: 20px;
+                padding: 20px;
+            }
+            .card-header {
+                font-size: 1.2rem;
+                font-weight: 600;
+                background-color: #4CAF50;
+                color: white;
+                padding: 10px;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+            }
+            .shiny-input-slider {
+                margin-bottom: 15px;
+            }
+            .card-body {
+                padding: 10px;
+            }
+            .shiny-output-container {
+                max-width: 700px;  /* Limit plot width */
+                margin: 0 auto;
+            }
+        """)
+    )
+)
+
+# Server logic
+def server(input, output, session):
+
+    # Reactive to handle file processing and basic analysis
+    @reactive.event(input.run)
+    def process_file():
+        file: list[FileInfo] | None = input.file()
+        if not file:
+            return None
+
+        path = file[0]["datapath"]
+        adata = sc.read_h5ad(path)
+
+        # Filtering
+        sc.pp.filter_cells(adata, min_genes=input.min_genes())
+        adata = adata[adata.obs.n_genes < input.max_genes(), :]
+
+        # Preprocessing
+        sc.pp.normalize_total(adata)
+        sc.pp.log1p(adata)
+
+        # HVG selection
+        sc.pp.highly_variable_genes(
+            adata,
+            flavor=input.hvg_method(),
+            n_top_genes=input.n_top_genes()
+        )
+        adata = adata[:, adata.var.highly_variable]
+
+        # Plot HVG
+        plt.figure()
+        sc.pl.highly_variable_genes(adata, show=False)
+        plt.savefig("hvg_plot.png")
+
+        # Dimensionality Reduction
+        sc.pp.scale(adata, max_value=10)
+        sc.pp.pca(adata)
+        sc.pp.neighbors(adata)
+        sc.tl.umap(adata)
+        sc.tl.tsne(adata, perplexity=input.perplexity())
+
+        # Clustering
+        sc.tl.leiden(adata)
+
+        return adata
+
+    @reactive.event(input.find_clusters)
+    def find_clusters():
+        adata = process_file()
+        if adata is None:
+            return None
+
+        # Select clustering algorithm
+        method = input.clustering_method()
+        resolution = input.resolution()
+        group_singletons = input.group_singletons()
+
+        # Perform clustering based on selected method
+        if method == "louvain":
+            sc.tl.louvain(adata, resolution=resolution, random_state=42)
+        elif method == "louvain_multilevel":
+            sc.tl.louvain(adata, resolution=resolution, random_state=42, algorithm="multilevel")
+        elif method == "slm":
+            sc.tl.slm(adata, resolution=resolution)
+
+        # If group_singletons is True, merge singletons with nearest clusters
+        if group_singletons:
+            adata.obs["louvain"] = adata.obs["louvain"].cat.add_categories("Singleton")
+            adata.obs["louvain"] = adata.obs["louvain"].fillna("Singleton")
+
+        return adata
+
+    # Output for Dataset Summary
+    @output
+    @render.text
+    def summary():
+        adata = process_file()
+        if adata is None:
+            return "Upload a file and click Run."
+        return f"{adata.shape[0]} cells, {adata.shape[1]} genes after filtering."
+
+    # Output for UMAP Plot
+    @output
+    @render.plot
+    def umap_plot():
+        adata = process_file()
+        if adata is None:
+            return
+        plt.figure()
+        sc.pl.umap(adata, color="leiden", show=False)
+        return plt.gcf()
+
+    # Output for t-SNE Plot
+    @output
+    @render.plot
+    def tsne_plot():
+        adata = process_file()
+        if adata is None:
+            return
+        plt.figure()
+        sc.pl.tsne(adata, color="leiden", show=False)
+        return plt.gcf()
+
+    # Output for HVG Plot
+    @output
+    @render.plot
+    def hvg_plot():
+        adata = process_file()
+        if adata is None:
+            return
+        plt.figure()
+        sc.pl.highly_variable_genes(adata, show=False)
+        return plt.gcf()
+
+    # Output for Clustered UMAP Plot
+    @output
+    @render.plot
+    def clustered_umap_plot():
+        adata = find_clusters()
+        if adata is None:
+            return
+        plt.figure()
+        sc.pl.umap(adata, color="louvain", show=False)
+        return plt.gcf()
+
+    # Output for Clustered t-SNE Plot
+    @output
+    @render.plot
+    def clustered_tsne_plot():
+        adata = find_clusters()
+        if adata is None:
+            return
+        plt.figure()
+        sc.pl.tsne(adata, color="louvain", show=False)
+        return plt.gcf()
+
+app = App(app_ui, server)
