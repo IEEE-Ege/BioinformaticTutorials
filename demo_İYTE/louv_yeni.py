@@ -39,31 +39,32 @@ app_ui = ui.page_fluid(
         [
             ui.card(
                 ui.card_header("Dataset Summary"),
-                ui.output_text_verbatim("summary")
+                ui.output_text_verbatim("summary"),
+                id="summary_card"
             ),
             ui.card(
                 ui.card_header("Highly Variable Genes"),
-                ui.output_plot("hvg_plot", height="300px")
+                ui.output_plot("hvg_plot")
             ),
             ui.card(
                 ui.card_header("UMAP Plot"),
-                ui.output_plot("umap_plot", height="300px")
+                ui.output_plot("umap_plot")
             ),
             ui.card(
                 ui.card_header("t-SNE Plot"),
-                ui.output_plot("tsne_plot", height="300px")
+                ui.output_plot("tsne_plot")
             ),
             ui.card(
                 ui.card_header("Clustered UMAP Plot"),
-                ui.output_plot("clustered_umap_plot", height="300px")
+                ui.output_plot("clustered_umap_plot")
             ),
             ui.card(
                 ui.card_header("Clustered t-SNE Plot"),
-                ui.output_plot("clustered_tsne_plot", height="300px")
+                ui.output_plot("clustered_tsne_plot")
             ),
             ui.card(
                 ui.card_header("Marker Gene MatrixPlot"),
-                ui.output_plot("marker_matrix_plot", height="500px")
+                ui.output_plot("marker_matrix_plot")
             )
         ]
     ),
@@ -90,11 +91,20 @@ app_ui = ui.page_fluid(
             }
             .card-body {
                 padding: 10px;
+                display: flex;
+                justify-content: center;
+                align-items: center;
             }
-            .shiny-output-container {
-                max-width: 700px;
+            .shiny-output-container {   
                 margin: 0 auto;
             }
+            #summary {
+                justify-content: flex-end;
+            }
+            .shiny-image-output {
+                max-width: 700px;
+                max-height: 600px;
+                    }
         """)
     )
 )
@@ -127,6 +137,7 @@ def server(input, output, session):
 
         sc.pp.normalize_total(adata)
         sc.pp.log1p(adata)
+        adata.var_names = adata.var_names.astype(str)
 
         sc.pp.highly_variable_genes(
             adata,
@@ -222,6 +233,7 @@ def server(input, output, session):
             return
         plt.figure()
         clustering_key = "leiden" if "leiden" in adata.obs.columns else "louvain"
+
         sc.pl.tsne(adata, color=clustering_key, show=False)
         return plt.gcf()
 
@@ -230,10 +242,41 @@ def server(input, output, session):
     def marker_matrix_plot():
         adata = find_clusters()
         if adata is None:
-            return
+            plt.figure()
+            plt.text(0.5, 0.5, 'No data loaded.', ha='center', va='center')
+            plt.axis('off')
+            return plt.gcf()
+
+        if adata.raw is None:
+            plt.figure()
+            plt.text(0.5, 0.5, 'No raw data available.', ha='center', va='center')
+            plt.axis('off')
+            return plt.gcf()
+
         plt.figure()
         clustering_key = "leiden" if "leiden" in adata.obs.columns else "louvain"
-        sc.pl.matrixplot(adata, marker_genes_dict, groupby=clustering_key, use_raw=False, show=False)
+
+        # Make sure all genes are str
+        fixed_marker_genes_dict = {
+            group: [str(gene) for gene in genes]
+            for group, genes in marker_genes_dict.items()
+        }
+
+        available_genes = set(adata.var_names)
+
+        filtered_marker_genes_dict = {
+            cluster: [gene for gene in genes if gene in available_genes]
+            for cluster, genes in fixed_marker_genes_dict.items()
+        }
+
+        sc.pl.matrixplot(
+            adata,
+            filtered_marker_genes_dict,
+            groupby=clustering_key,
+            use_raw=False,
+            show=False
+        )
         return plt.gcf()
+
 
 app = App(app_ui, server)
