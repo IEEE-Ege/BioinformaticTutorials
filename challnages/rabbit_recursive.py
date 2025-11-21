@@ -7,4 +7,6 @@ def rabbit_calc(n, k):
     return rabbit_calc(n-1, k) + k * rabbit_calc(n-2, k) 
 
 
-print(rabbit_calc(5,3))
+print(rabbit_calc(5,3)) # k means each pair of rabbits produce 3 pairs of offspring
+
+# if k = 1, it means each pair of rabbits produce 1 pair of offspring
